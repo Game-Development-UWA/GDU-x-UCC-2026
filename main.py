@@ -7,13 +7,13 @@ from time import sleep
 
 QUOTA_TIME = 15
 
-class State:
+class State: 
     def __init__(self):
         self.coins = 10
         
         self.trees = 5
-        self.banks = -1
-        self.ram = -1
+        self.banks = 0
+        self.ram = 0
         
         self.curQuotaTime = QUOTA_TIME
     
@@ -31,10 +31,19 @@ class State:
         if self.ram < 0:
             return 0
         return self.ram
+    
+class Message:
+    def __init__(self):
+        self.text = ""
+        self.timer = 0
         
 globalState = State()
 globalLock = Lock()
 
+message = Message()
+messageLock = Lock()
+
+loseSignal = Event()
 exitSignal = Event()
 
 def _coinChange(exitEvent: Event):
@@ -43,34 +52,7 @@ def _coinChange(exitEvent: Event):
         if exitEvent.is_set():
             break
         with globalLock:
-            globalState.coins += globalState.getTrees() + 1.5 * globalState.getBanks() + 4 * globalState.getRAM()
-        sleep(0.2)
-            
-def _treeChange(exitEvent: Event):
-    global globalState
-    while True:
-        if exitEvent.is_set():
-            break
-        with globalLock:
-            globalState.trees
-        sleep(0.2)
-        
-def _bankChange(exitEvent: Event):
-    global globalState
-    while True:
-        if exitEvent.is_set():
-            break
-        with globalLock:
-            globalState.banks
-        sleep(0.2)
-
-def _ramChange(exitEvent: Event):
-    global globalState
-    while True:
-        if exitEvent.is_set():
-            break
-        with globalLock:
-            globalState.ram
+            globalState.coins += round(globalState.getTrees() + 1.5 * globalState.getBanks() + 4 * globalState.getRAM())
         sleep(0.2)
         
 def _quotaTimeChange(exitEvent: Event):
@@ -79,13 +61,16 @@ def _quotaTimeChange(exitEvent: Event):
         if exitEvent.is_set():
             break
         if globalState.curQuotaTime == 0:
-            globalState.curQuotaTime = QUOTA_TIME
-            
-            globalState.trees -= 4
-            if globalState.banks != -1:
-                globalState.banks -= 2
-            if globalState.ram != -1:
-                globalState.ram -= 1
+            with globalLock:
+                globalState.curQuotaTime = QUOTA_TIME
+                
+                globalState.trees -= max(2, round(globalState.getTrees() * 0.4))
+                globalState.banks -= max(1, round(globalState.getBanks() * 0.4))
+                globalState.ram -= max(0, round(globalState.getRAM()*0.4))
+                
+                if globalState.trees <= 0 and globalState.banks <= 0 and globalState.ram <= 0 and globalState.coins < 60:
+                    loseSignal.set()
+                
         
         sleep(0.1)
         with globalLock:
@@ -93,53 +78,110 @@ def _quotaTimeChange(exitEvent: Event):
 
 def _output(exitEvent: Event):
     global globalState
+    global message
     while True:
         sleep(0.05)
         if exitEvent.is_set():
             break
-        print(f"\rCoins - {globalState.coins}")
-        print(f"\rTrees - {globalState.trees} | Banks - {globalState.banks} | RAM - {globalState.ram}")
-        print(f"\rTime before next quota due - {globalState.curQuotaTime}")
-        print("\033[3A", end="") # weird ANSI for going back two lines so illusion of static lines
+        
+        if message.text != "":
+            with messageLock:
+                message.timer = max(0, message.timer-1)
+                if message.timer == 0:
+                    message.text = ""
+
+        print(f"""\n\r\033[K[ Coins (@) {globalState.coins} ]\n
+           \r\033[KTrees *T* {globalState.trees}
+           \r\033[KBanks [$] {globalState.banks}
+           \r\033[KRAM |#$#| {globalState.ram}\n
+           \r\033[KTime before next quota due - {globalState.curQuotaTime}
+           \r\033[K{message.text}""")
+        print("\033[9A", end="") # weird ANSI for going back two lines so illusion of static lines 
+        
+        if globalState.trees <= 0 and globalState.banks <= 0 and globalState.ram <= 0 and globalState.coins < 60:
+            loseSignal.set()
         
 def _input(exitEvent: Event):
     global globalState
+    global message
     while True:
         sleep(0.05)
         if exitEvent.is_set():
+            if loseSignal.is_set():
+                inp = getch()
+            os.system('cls' if os.name == 'nt' else 'clear')
             break
         inp = getch()
+        if exitEvent.is_set():
+            os.system('cls' if os.name == 'nt' else 'clear')
+            break
         if inp == b'\x03':
             exitEvent.set()
+            os.system('cls' if os.name == 'nt' else 'clear')
             break
+        inp = inp.decode('utf-8')
         
+        if inp == "t":
+            cost = max(60, 60 + globalState.trees * 10)
+            if globalState.coins >= cost:
+                with globalLock:
+                    globalState.coins -= cost
+                    globalState.trees += 1
+            else:
+                message.text = f"You need {cost} coins to buy a Tree!"
+                message.timer = 40
+        elif inp == "b":
+            cost = max(110, 110 + globalState.banks * 19)
+            if globalState.coins >= cost:
+                with globalLock:
+                    globalState.coins -= cost
+                    globalState.banks += 1
+            else:
+                message.text = f"You need {cost} coins to buy a Bank!"
+                message.timer = 40
+        elif inp == "r":
+            cost = max(400, 400 + globalState.ram * 50)
+            if globalState.coins >= cost:
+                with globalLock:
+                    globalState.coins -= cost
+                    globalState.ram += 1
+            else:
+                message.text = f"You need {cost} coins to buy a RAM Stick!"
+                message.timer = 40
 
-        
-        
 def main():
     input = Thread(target=_input, args=(exitSignal,))
     output = Thread(target=_output, args=(exitSignal,))
     
     coinChange = Thread(target=_coinChange, args=(exitSignal,))
-    treeChange = Thread(target=_treeChange, args=(exitSignal,))
-    bankChange = Thread(target=_bankChange, args=(exitSignal,))
-    ramChange = Thread(target=_ramChange, args=(exitSignal,))
     quotaTimeChange = Thread(target=_quotaTimeChange, args=(exitSignal,))
     
-    treeChange.start()
-    bankChange.start()
-    ramChange.start()
     coinChange.start()
     quotaTimeChange.start()
     input.start()
     output.start()
+    globalTimer = 0
     
     try:
         while True:
             sleep(0.1)
+            globalTimer += 0.1
+            if exitSignal.is_set():
+                print("\033[2A")
+                os.system('cls' if os.name == 'nt' else 'clear')
+                break
+            
+            if loseSignal.is_set():
+                exitSignal.set()
+                print("\033[9A")
+                for i in range(9): print("")
+                print(f"Your economy succumbed to 2026 inflation! You survived for {round(globalTimer, 2)} seconds :)")
+                print("+--------------------------------------------------------------------------------------------+")
+                print("Press any key to end")
+                break
+                
     except KeyboardInterrupt:
         exitSignal.set()
-        print("\033[2A")
         os.system('cls' if os.name == 'nt' else 'clear')
 
 if __name__ == "__main__":
